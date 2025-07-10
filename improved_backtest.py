@@ -1,10 +1,15 @@
 import pandas as pd
 import numpy as np
-from analysis import generate_analysis
+import ta
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
 
 class ImprovedBacktestResult:
     def __init__(self):
         self.total_return = 0
+        self.annualized_return = 0
         self.win_rate = 0
         self.num_trades = 0
         self.max_drawdown = 0
@@ -12,244 +17,324 @@ class ImprovedBacktestResult:
         self.profit_factor = 0
         self.avg_win = 0
         self.avg_loss = 0
+        self.max_consecutive_losses = 0
         self.trades = []
         self.equity_curve = []
-        self.daily_returns = []
+        self.strategy_name = ""
 
-def calculate_improved_position_size(capital, price, risk_per_trade=0.01, stop_loss_pct=0.03):
-    """Calculate position size with better risk management"""
-    risk_amount = capital * risk_per_trade
-    stop_loss_amount = price * stop_loss_pct
-    position_size = risk_amount / stop_loss_amount
-    # Limit position size to max 10% of capital
-    max_position = capital * 0.1 / price
-    return min(position_size, max_position)
-
-def calculate_dynamic_stop_loss(entry_price, direction, atr, multiplier=1.5):
-    """Calculate dynamic stop loss based on ATR"""
-    if direction == 'long':
-        return entry_price - (atr * multiplier)
-    else:
-        return entry_price + (atr * multiplier)
-
-def calculate_dynamic_take_profit(entry_price, direction, atr, risk_reward_ratio=2):
-    """Calculate dynamic take profit based on ATR"""
-    if direction == 'long':
-        return entry_price + (atr * risk_reward_ratio)
-    else:
-        return entry_price - (atr * risk_reward_ratio)
-
-def run_improved_backtest(
-    df: pd.DataFrame,
-    initial_capital=10000,
-    transaction_cost=0.0005,
-    max_concurrent_trades=5,
-    risk_per_trade=0.01,
-    stop_loss_atr_mult=1.5,
-    take_profit_rr=2.0,
-    min_confirmations=7,
-    allow_short=False
-):
-    """
-    Improved backtest with parameterization and short selling support.
-    """
-    capital = initial_capital
-    open_trades = []
-    trades = []
-    equity_curve = [initial_capital]
-    daily_returns = []
+def calculate_advanced_indicators(df):
+    """Calculate advanced technical indicators"""
+    # Basic indicators
+    df['SMA_20'] = df['Close'].rolling(window=20).mean()
+    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    df['EMA_20'] = df['Close'].ewm(span=20).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50).mean()
     
-    df['ATR'] = calculate_atr(df, window=14)
+    # RSI
+    df['RSI_14'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+    
+    # MACD
+    macd = ta.trend.MACD(df['Close'])
+    df['MACD'] = macd.macd()
+    df['MACD_Signal'] = macd.macd_signal()
+    df['MACD_Histogram'] = macd.macd_diff()
+    
+    # Bollinger Bands
+    bb = ta.volatility.BollingerBands(df['Close'])
+    df['BB_High'] = bb.bollinger_hband()
+    df['BB_Low'] = bb.bollinger_lband()
+    df['BB_Mid'] = bb.bollinger_mavg()
+    df['BB_Width'] = (df['BB_High'] - df['BB_Low']) / df['BB_Mid']
+    
+    # Stochastic
+    stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'])
+    df['STOCH_K'] = stoch.stoch()
+    df['STOCH_D'] = stoch.stoch_signal()
+    
+    # Williams %R
+    df['WILLR'] = ta.momentum.WilliamsRIndicator(df['High'], df['Low'], df['Close']).williams_r()
+    
+    # CCI
+    df['CCI'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close']).cci()
+    
+    # ADX
+    adx = ta.trend.ADXIndicator(df['High'], df['Low'], df['Close'])
+    df['ADX'] = adx.adx()
+    df['DI_Plus'] = adx.adx_pos()
+    df['DI_Minus'] = adx.adx_neg()
+    
+    # ATR
+    df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close']).average_true_range()
+    
+    # Volume indicators
+    df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+    df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+    
+    # Price momentum
     df['Price_Change'] = df['Close'].pct_change()
-    df['Volatility'] = df['Price_Change'].rolling(20).std()
-    df['SMA_50'] = df['Close'].rolling(50).mean()
-    df['EMA_12'] = df['Close'].ewm(span=12).mean()
-    df['EMA_26'] = df['Close'].ewm(span=26).mean()
-    df['RSI_MA'] = df['RSI_14'].rolling(10).mean()
+    df['Price_Change_5'] = df['Close'].pct_change(5)
+    df['Price_Change_10'] = df['Close'].pct_change(10)
+    
+    # Volatility
+    df['Volatility'] = df['Close'].rolling(window=20).std()
+    
+    # Support and Resistance
+    df['Support'] = df['Low'].rolling(window=20).min()
+    df['Resistance'] = df['High'].rolling(window=20).max()
+    
+    return df
 
-    for i in range(50, len(df)):
-        current_price = df.iloc[i]['Close']
-        current_atr = df.iloc[i]['ATR']
-        current_volatility = df.iloc[i]['Volatility']
+def generate_ml_signals(df, lookback=60):
+    """Generate machine learning based signals"""
+    # Prepare features
+    features = ['RSI_14', 'MACD', 'STOCH_K', 'WILLR', 'CCI', 'Volume_Ratio', 
+                'Price_Change', 'Price_Change_5', 'Price_Change_10', 'BB_Width']
+    
+    # Create target (1 if price increases by 2% in next 5 days, 0 otherwise)
+    df['Target'] = (df['Close'].shift(-5) / df['Close'] - 1) > 0.02
+    
+    # Prepare data for ML
+    X = df[features].fillna(0)
+    y = df['Target'].fillna(False)
+    
+    # Train model on historical data
+    signals = np.zeros(len(df))
+    
+    for i in range(lookback, len(df) - 5):
+        # Train on past data
+        X_train = X.iloc[i-lookback:i]
+        y_train = y.iloc[i-lookback:i]
         
-        # 1. Check all open trades for exit conditions
-        closed_indices = []
-        for idx, trade in enumerate(open_trades):
-            if trade['direction'] == 'long':
-                if current_price <= trade['stop_loss']:
-                    exit_reason = 'stop_loss'
-                elif current_price >= trade['take_profit']:
-                    exit_reason = 'take_profit'
-                elif 'exit_signal' in trade and trade['exit_signal']:
-                    exit_reason = 'signal'
-                else:
-                    continue
-                exit_value = trade['size'] * current_price * (1 - transaction_cost)
-                capital += exit_value
-                profit_pct = (current_price - trade['entry_price']) / trade['entry_price']
-                trades.append({
-                    'entry_price': trade['entry_price'],
-                    'exit_price': current_price,
-                    'profit_pct': profit_pct,
-                    'exit_reason': exit_reason,
-                    'hold_days': i - trade['entry_index'] + 1,
-                    'direction': 'long'
-                })
-                closed_indices.append(idx)
-            elif trade['direction'] == 'short':
-                if current_price >= trade['stop_loss']:
-                    exit_reason = 'stop_loss'
-                elif current_price <= trade['take_profit']:
-                    exit_reason = 'take_profit'
-                elif 'exit_signal' in trade and trade['exit_signal']:
-                    exit_reason = 'signal'
-                else:
-                    continue
-                exit_value = trade['size'] * (2 * trade['entry_price'] - current_price) * (1 - transaction_cost)
-                capital += exit_value
-                profit_pct = (trade['entry_price'] - current_price) / trade['entry_price']
-                trades.append({
-                    'entry_price': trade['entry_price'],
-                    'exit_price': current_price,
-                    'profit_pct': profit_pct,
-                    'exit_reason': exit_reason,
-                    'hold_days': i - trade['entry_index'] + 1,
-                    'direction': 'short'
-                })
-                closed_indices.append(idx)
-        for idx in reversed(closed_indices):
-            del open_trades[idx]
+        # Skip if not enough data
+        if len(X_train) < 30 or y_train.sum() < 5:
+            continue
+            
+        # Train model
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
         
-        # 2. Generate trading signal
-        if 'Strategy_Signal' in df.columns:
-            signal = df.iloc[i]['Strategy_Signal']
-        else:
-            sub_df = df.iloc[:i+1]
-            _, signal = generate_analysis(sub_df)
+        # Predict current signal
+        X_current = X.iloc[i:i+1]
+        prediction = model.predict_proba(X_current)[0][1]  # Probability of positive outcome
         
-        # 3. Enhanced entry criteria
+        if prediction > 0.6:  # High confidence buy signal
+            signals[i] = 1
+        elif prediction < 0.3:  # High confidence sell signal
+            signals[i] = -1
+    
+    return signals
+
+def generate_momentum_signals(df):
+    """Generate momentum-based signals"""
+    signals = np.zeros(len(df))
+    
+    for i in range(20, len(df)):
+        # Multiple momentum confirmations
         rsi = df.iloc[i]['RSI_14']
-        rsi_ma = df.iloc[i]['RSI_MA']
         macd = df.iloc[i]['MACD']
         macd_signal = df.iloc[i]['MACD_Signal']
-        volume = df.iloc[i]['Volume']
-        avg_volume = df.iloc[i-20:i]['Volume'].mean()
-        sma_20 = df.iloc[i]['SMA_20']
-        sma_50 = df.iloc[i]['SMA_50']
-        ema_12 = df.iloc[i]['EMA_12']
-        ema_26 = df.iloc[i]['EMA_26']
-        volume_confirmed = volume > avg_volume * 1.05
-        macd_confirmed = macd > macd_signal and macd > 0
-        rsi_confirmed = 40 < rsi < 60
-        rsi_trending_up = rsi > rsi_ma
-        volatility_ok = current_volatility < 0.025
-        price_above_sma20 = current_price > sma_20 * 1.005
-        price_above_sma50 = current_price > sma_50 * 1.005
-        ema_bullish = ema_12 > ema_26
-        sma_bullish = sma_20 > sma_50
-        momentum_positive = df.iloc[i]['Price_Change'] > 0
-        confirmations = sum([
-            volume_confirmed,
-            macd_confirmed,
-            rsi_confirmed,
-            rsi_trending_up,
-            volatility_ok,
-            price_above_sma20,
-            price_above_sma50,
-            ema_bullish,
-            sma_bullish,
-            momentum_positive
-        ])
-        if signal == 'Buy' and len(open_trades) < max_concurrent_trades and capital > 0:
-            if confirmations >= min_confirmations:
-                direction = 'long'
-                entry_price = current_price
-                position_size = calculate_improved_position_size(capital, current_price, risk_per_trade, stop_loss_atr_mult / 10)
-                if position_size * current_price * (1 + transaction_cost) > capital:
-                    position_size = capital / (current_price * (1 + transaction_cost))
-                if position_size > 0:
-                    capital -= position_size * current_price * (1 + transaction_cost)
-                    stop_loss = calculate_dynamic_stop_loss(entry_price, direction, current_atr, stop_loss_atr_mult)
-                    take_profit = calculate_dynamic_take_profit(entry_price, direction, current_atr, take_profit_rr)
-                    open_trades.append({
-                        'entry_price': entry_price,
-                        'size': position_size,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'direction': direction,
-                        'entry_index': i
-                    })
-        if allow_short and signal == 'Sell' and len(open_trades) < max_concurrent_trades and capital > 0:
-            if confirmations >= min_confirmations:
-                direction = 'short'
-                entry_price = current_price
-                position_size = calculate_improved_position_size(capital, current_price, risk_per_trade, stop_loss_atr_mult / 10)
-                if position_size * current_price * (1 + transaction_cost) > capital:
-                    position_size = capital / (current_price * (1 + transaction_cost))
-                if position_size > 0:
-                    capital -= position_size * current_price * (1 + transaction_cost)
-                    stop_loss = calculate_dynamic_stop_loss(entry_price, direction, current_atr, stop_loss_atr_mult)
-                    take_profit = calculate_dynamic_take_profit(entry_price, direction, current_atr, take_profit_rr)
-                    open_trades.append({
-                        'entry_price': entry_price,
-                        'size': position_size,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'direction': direction,
-                        'entry_index': i
-                    })
-        # Set exit_signal for all open trades if signal == 'Sell' (for long) or 'Buy' (for short)
-        if signal == 'Sell':
-            for trade in open_trades:
-                if trade['direction'] == 'long':
-                    trade['exit_signal'] = True
-        if allow_short and signal == 'Buy':
-            for trade in open_trades:
-                if trade['direction'] == 'short':
-                    trade['exit_signal'] = True
-        # 5. Track equity curve
-        current_equity = capital + sum([
-            t['size'] * current_price if t['direction'] == 'long' else t['size'] * (2 * t['entry_price'] - current_price)
-            for t in open_trades
-        ])
+        stoch_k = df.iloc[i]['STOCH_K']
+        stoch_d = df.iloc[i]['STOCH_D']
+        volume_ratio = df.iloc[i]['Volume_Ratio']
+        
+        # Strong buy conditions
+        buy_conditions = [
+            rsi > 30 and rsi < 70,  # RSI not extreme
+            macd > macd_signal,     # MACD bullish crossover
+            macd > 0,               # MACD above zero
+            stoch_k > stoch_d,      # Stochastic bullish
+            stoch_k < 80,           # Not overbought
+            volume_ratio > 1.2,     # Above average volume
+            df.iloc[i]['Close'] > df.iloc[i]['SMA_20'],  # Price above SMA
+            df.iloc[i]['SMA_20'] > df.iloc[i]['SMA_50']  # Golden cross
+        ]
+        
+        # Strong sell conditions
+        sell_conditions = [
+            rsi > 70,               # RSI overbought
+            macd < macd_signal,     # MACD bearish crossover
+            macd < 0,               # MACD below zero
+            stoch_k < stoch_d,      # Stochastic bearish
+            stoch_k > 20,           # Not oversold
+            df.iloc[i]['Close'] < df.iloc[i]['SMA_20'],  # Price below SMA
+            df.iloc[i]['SMA_20'] < df.iloc[i]['SMA_50']  # Death cross
+        ]
+        
+        if sum(buy_conditions) >= 6:  # Need majority of conditions
+            signals[i] = 1
+        elif sum(sell_conditions) >= 5:
+            signals[i] = -1
+    
+    return signals
+
+def generate_mean_reversion_signals(df):
+    """Generate mean reversion signals"""
+    signals = np.zeros(len(df))
+    
+    for i in range(20, len(df)):
+        current_price = df.iloc[i]['Close']
+        bb_high = df.iloc[i]['BB_High']
+        bb_low = df.iloc[i]['BB_Low']
+        bb_mid = df.iloc[i]['BB_Mid']
+        rsi = df.iloc[i]['RSI_14']
+        willr = df.iloc[i]['WILLR']
+        
+        # Oversold conditions (buy signal)
+        oversold_conditions = [
+            current_price <= bb_low * 1.01,  # Price at or below lower BB
+            rsi < 30,                         # RSI oversold
+            willr < -80,                      # Williams %R oversold
+            df.iloc[i]['Volume_Ratio'] > 1.5  # High volume confirmation
+        ]
+        
+        # Overbought conditions (sell signal)
+        overbought_conditions = [
+            current_price >= bb_high * 0.99,  # Price at or above upper BB
+            rsi > 70,                          # RSI overbought
+            willr > -20,                       # Williams %R overbought
+            df.iloc[i]['Volume_Ratio'] > 1.5   # High volume confirmation
+        ]
+        
+        if sum(oversold_conditions) >= 3:
+            signals[i] = 1
+        elif sum(overbought_conditions) >= 3:
+            signals[i] = -1
+    
+    return signals
+
+def run_improved_backtest(df, strategy='combined', initial_capital=10000, transaction_cost=0.001):
+    """
+    Run improved backtest with multiple strategies
+    """
+    # Calculate all indicators
+    df = calculate_advanced_indicators(df)
+    
+    # Generate signals based on strategy
+    if strategy == 'ml':
+        signals = generate_ml_signals(df)
+    elif strategy == 'momentum':
+        signals = generate_momentum_signals(df)
+    elif strategy == 'mean_reversion':
+        signals = generate_mean_reversion_signals(df)
+    elif strategy == 'combined':
+        # Combine all strategies
+        ml_signals = generate_ml_signals(df)
+        momentum_signals = generate_momentum_signals(df)
+        mean_rev_signals = generate_mean_reversion_signals(df)
+        
+        # Weighted combination
+        signals = (ml_signals * 0.4 + momentum_signals * 0.4 + mean_rev_signals * 0.2)
+        # Convert to discrete signals
+        signals = np.where(signals > 0.5, 1, np.where(signals < -0.5, -1, 0))
+    
+    # Initialize backtest variables
+    capital = initial_capital
+    position = 0
+    entry_price = 0
+    trades = []
+    equity_curve = [initial_capital]
+    
+    # Risk management parameters
+    max_position_size = 0.2  # Max 20% of capital per trade
+    stop_loss_pct = 0.05     # 5% stop loss
+    take_profit_pct = 0.10   # 10% take profit
+    
+    for i in range(20, len(df)):
+        current_price = df.iloc[i]['Close']
+        current_signal = signals[i]
+        
+        # Check stop loss and take profit for existing position
+        if position > 0:
+            profit_pct = (current_price - entry_price) / entry_price
+            
+            if profit_pct <= -stop_loss_pct or profit_pct >= take_profit_pct:
+                # Close position
+                exit_price = current_price
+                capital = position * exit_price * (1 - transaction_cost)
+                profit_pct = (exit_price - entry_price) / entry_price
+                
+                trades.append({
+                    'entry_date': df.index[i-position],
+                    'exit_date': df.index[i],
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'profit_pct': profit_pct,
+                    'exit_reason': 'stop_loss' if profit_pct <= -stop_loss_pct else 'take_profit'
+                })
+                
+                position = 0
+                entry_price = 0
+        
+        # Open new position based on signal
+        if current_signal == 1 and position == 0:
+            # Buy signal
+            position_size = capital * max_position_size / current_price
+            position = position_size
+            entry_price = current_price
+            capital -= position_size * current_price * (1 + transaction_cost)
+            
+        elif current_signal == -1 and position > 0:
+            # Sell signal
+            exit_price = current_price
+            capital = position * exit_price * (1 - transaction_cost)
+            profit_pct = (exit_price - entry_price) / entry_price
+            
+            trades.append({
+                'entry_date': df.index[i-position],
+                'exit_date': df.index[i],
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'profit_pct': profit_pct,
+                'exit_reason': 'signal'
+            })
+            
+            position = 0
+            entry_price = 0
+        
+        # Track equity curve
+        current_equity = capital + (position * current_price if position > 0 else 0)
         equity_curve.append(current_equity)
-        if len(equity_curve) > 1:
-            daily_return = (current_equity - equity_curve[-2]) / equity_curve[-2]
-            daily_returns.append(daily_return)
-    # 6. Close all open trades at the end
-    for trade in open_trades:
+    
+    # Close final position
+    if position > 0:
         final_price = df.iloc[-1]['Close']
-        if trade['direction'] == 'long':
-            exit_value = trade['size'] * final_price * (1 - transaction_cost)
-            capital += exit_value
-            profit_pct = (final_price - trade['entry_price']) / trade['entry_price']
-        else:
-            exit_value = trade['size'] * (2 * trade['entry_price'] - final_price) * (1 - transaction_cost)
-            capital += exit_value
-            profit_pct = (trade['entry_price'] - final_price) / trade['entry_price']
+        capital = position * final_price * (1 - transaction_cost)
+        profit_pct = (final_price - entry_price) / entry_price
+        
         trades.append({
-            'entry_price': trade['entry_price'],
+            'entry_date': df.index[len(df)-position],
+            'exit_date': df.index[-1],
+            'entry_price': entry_price,
             'exit_price': final_price,
             'profit_pct': profit_pct,
-            'exit_reason': 'final',
-            'hold_days': len(df) - trade['entry_index'],
-            'direction': trade['direction']
+            'exit_reason': 'final'
         })
-    # 7. Calculate performance metrics (same as before)
+    
+    # Calculate performance metrics
     result = ImprovedBacktestResult()
     result.total_return = (capital - initial_capital) / initial_capital * 100
     result.num_trades = len(trades)
     result.trades = trades
     result.equity_curve = equity_curve
-    result.daily_returns = daily_returns
+    result.strategy_name = strategy
+    
+    # Calculate annualized return
+    days = (df.index[-1] - df.index[0]).days
+    if days > 0:
+        result.annualized_return = ((capital / initial_capital) ** (365 / days) - 1) * 100
+    
     if trades:
         wins = [t for t in trades if t['profit_pct'] > 0]
         losses = [t for t in trades if t['profit_pct'] <= 0]
+        
         result.win_rate = len(wins) / len(trades) * 100
         result.avg_win = np.mean([t['profit_pct'] for t in wins]) * 100 if wins else 0
         result.avg_loss = np.mean([t['profit_pct'] for t in losses]) * 100 if losses else 0
+        
         if losses:
             result.profit_factor = abs(sum([t['profit_pct'] for t in wins])) / abs(sum([t['profit_pct'] for t in losses]))
+    
+    # Calculate max drawdown
     if equity_curve:
         peak = equity_curve[0]
         max_dd = 0
@@ -259,69 +344,63 @@ def run_improved_backtest(
             dd = (peak - equity) / peak
             max_dd = max(max_dd, dd)
         result.max_drawdown = max_dd * 100
-    if len(daily_returns) > 0 and np.std(daily_returns) > 0:
-        result.sharpe_ratio = np.mean(daily_returns) / np.std(daily_returns) * np.sqrt(252)
+    
+    # Calculate Sharpe ratio
+    if len(equity_curve) > 1:
+        returns = np.diff(equity_curve) / equity_curve[:-1]
+        if len(returns) > 0 and np.std(returns) > 0:
+            result.sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252)
+    
+    # Calculate max consecutive losses
+    consecutive_losses = 0
+    max_consecutive_losses = 0
+    for trade in trades:
+        if trade['profit_pct'] <= 0:
+            consecutive_losses += 1
+            max_consecutive_losses = max(max_consecutive_losses, consecutive_losses)
+        else:
+            consecutive_losses = 0
+    result.max_consecutive_losses = max_consecutive_losses
+    
     return result
 
-def calculate_atr(df, window=14):
-    """Calculate Average True Range"""
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
-    
-    tr1 = high - low
-    tr2 = abs(high - close.shift())
-    tr3 = abs(low - close.shift())
-    
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=window).mean()
-    
-    return atr
-
-def print_improved_backtest_results(result: ImprovedBacktestResult):
-    """Print comprehensive improved backtest results"""
+def print_improved_results(result):
+    """Print comprehensive backtest results"""
     print("\n" + "="*70)
-    print("IMPROVED BACKTEST RESULTS")
+    print(f"IMPROVED BACKTEST RESULTS - {result.strategy_name.upper()} STRATEGY")
     print("="*70)
     print(f"Total Return: {result.total_return:.2f}%")
+    print(f"Annualized Return: {result.annualized_return:.2f}%")
     print(f"Number of Trades: {result.num_trades}")
-    print(f"Win Rate: {result.win_rate:.2f}%")
+    print(f"Win Rate: {result.win_rate:.1f}%")
     print(f"Average Win: {result.avg_win:.2f}%")
     print(f"Average Loss: {result.avg_loss:.2f}%")
     print(f"Profit Factor: {result.profit_factor:.2f}")
     print(f"Max Drawdown: {result.max_drawdown:.2f}%")
     print(f"Sharpe Ratio: {result.sharpe_ratio:.2f}")
+    print(f"Max Consecutive Losses: {result.max_consecutive_losses}")
     
     if result.trades:
-        avg_hold_days = np.mean([t.get('hold_days', 1) for t in result.trades])
-        print(f"Average Hold Days: {avg_hold_days:.1f}")
-    
-    print("="*70)
-    
-    if result.trades:
-        print("\nTRADE DETAILS:")
-        print("-"*70)
-        for i, trade in enumerate(result.trades, 1):
-            hold_days = trade.get('hold_days', 'N/A')
-            print(f"Trade {i}: Entry: ${trade['entry_price']:.2f}, "
-                  f"Exit: ${trade['exit_price']:.2f}, "
-                  f"P&L: {trade['profit_pct']*100:.2f}%, "
-                  f"Hold: {hold_days} days, "
-                  f"Reason: {trade['exit_reason']}")
+        print(f"\nRecent Trades:")
+        for i, trade in enumerate(result.trades[-5:]):
+            print(f"  {i+1}. {trade['entry_date'].strftime('%Y-%m-%d')} → {trade['exit_date'].strftime('%Y-%m-%d')}: "
+                  f"{trade['profit_pct']:.2f}% ({trade['exit_reason']})")
 
-def run_strategy_backtest(df: pd.DataFrame, strategy_signal_column='Strategy_Signal'):
-    """Run backtest using strategy signals from dataframe"""
-    df_copy = df.copy()
-    if strategy_signal_column not in df_copy.columns:
-        # Generate signals using analysis module
-        signals = []
-        for i in range(len(df_copy)):
-            if i < 50:  # Need enough data for analysis
-                signals.append('Hold')
-            else:
-                sub_df = df_copy.iloc[:i+1]
-                _, signal = generate_analysis(sub_df)
-                signals.append(signal)
-        df_copy[strategy_signal_column] = signals
+def run_strategy_comparison(df, initial_capital=10000):
+    """Compare different strategies"""
+    strategies = ['ml', 'momentum', 'mean_reversion', 'combined']
+    results = {}
     
-    return run_improved_backtest(df_copy) 
+    print("Running strategy comparison...")
+    for strategy in strategies:
+        print(f"Testing {strategy} strategy...")
+        result = run_improved_backtest(df, strategy, initial_capital)
+        results[strategy] = result
+        print_improved_results(result)
+    
+    # Find best strategy
+    best_strategy = max(results.keys(), key=lambda x: results[x].total_return)
+    print(f"\n🏆 BEST STRATEGY: {best_strategy.upper()}")
+    print(f"Total Return: {results[best_strategy].total_return:.2f}%")
+    
+    return results 
