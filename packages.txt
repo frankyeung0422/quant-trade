@@ -1,0 +1,5 @@
+# System dependencies for quant trading app
+gcc
+g++
+make
+build-essential 
