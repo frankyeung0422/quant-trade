@@ -40,7 +40,7 @@ LIVE_TRADING=False
    - Go to [share.streamlit.io](https://share.streamlit.io)
    - Sign in with GitHub
    - Click "New app"
-   - Select your repository and set `web_app.py` as the main file
+   - Select your repository and set `web_app_simple.py` as the main file
 3. **Configure Environment Variables**:
    - In the Streamlit Cloud dashboard, go to your app settings
    - Add the environment variables listed above
@@ -86,7 +86,7 @@ LIVE_TRADING=False
 
 3. **Run the app**:
    ```bash
-   streamlit run web_app.py
+   streamlit run web_app_simple.py
    ```
 
 ## Configuration Files
