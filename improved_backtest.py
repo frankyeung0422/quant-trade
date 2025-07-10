@@ -253,8 +253,10 @@ def run_improved_backtest(df, strategy='combined', initial_capital=10000, transa
                 capital = position * exit_price * (1 - transaction_cost)
                 profit_pct = (exit_price - entry_price) / entry_price
                 
+                # Find entry date (approximate)
+                entry_idx = max(0, i - 30)  # Look back up to 30 days
                 trades.append({
-                    'entry_date': df.index[i-position],
+                    'entry_date': df.index[entry_idx],
                     'exit_date': df.index[i],
                     'entry_price': entry_price,
                     'exit_price': exit_price,
@@ -279,8 +281,10 @@ def run_improved_backtest(df, strategy='combined', initial_capital=10000, transa
             capital = position * exit_price * (1 - transaction_cost)
             profit_pct = (exit_price - entry_price) / entry_price
             
+            # Find entry date (approximate)
+            entry_idx = max(0, i - 30)  # Look back up to 30 days
             trades.append({
-                'entry_date': df.index[i-position],
+                'entry_date': df.index[entry_idx],
                 'exit_date': df.index[i],
                 'entry_price': entry_price,
                 'exit_price': exit_price,
@@ -301,8 +305,10 @@ def run_improved_backtest(df, strategy='combined', initial_capital=10000, transa
         capital = position * final_price * (1 - transaction_cost)
         profit_pct = (final_price - entry_price) / entry_price
         
+        # Find entry date (approximate)
+        entry_idx = max(0, len(df) - 30)  # Look back up to 30 days
         trades.append({
-            'entry_date': df.index[len(df)-position],
+            'entry_date': df.index[entry_idx],
             'exit_date': df.index[-1],
             'entry_price': entry_price,
             'exit_price': final_price,
