@@ -202,6 +202,76 @@ def generate_mean_reversion_signals(df):
     
     return signals
 
+def generate_sma_crossover_signals(df, short_window=20, long_window=50):
+    signals = np.zeros(len(df))
+    df['SMA_short'] = df['Close'].rolling(window=short_window).mean()
+    df['SMA_long'] = df['Close'].rolling(window=long_window).mean()
+    prev_signal = 0
+    for i in range(long_window, len(df)):
+        if df['SMA_short'].iloc[i] > df['SMA_long'].iloc[i] and df['SMA_short'].iloc[i-1] <= df['SMA_long'].iloc[i-1]:
+            signals[i] = 1  # Buy
+        elif df['SMA_short'].iloc[i] < df['SMA_long'].iloc[i] and df['SMA_short'].iloc[i-1] >= df['SMA_long'].iloc[i-1]:
+            signals[i] = -1  # Sell
+        else:
+            signals[i] = prev_signal
+        prev_signal = signals[i]
+    return signals
+
+def generate_rsi_macd_signals(df):
+    signals = np.zeros(len(df))
+    for i in range(1, len(df)):
+        rsi = df['RSI_14'].iloc[i]
+        macd = df['MACD'].iloc[i]
+        macd_prev = df['MACD'].iloc[i-1]
+        macd_signal = df['MACD_Signal'].iloc[i]
+        macd_signal_prev = df['MACD_Signal'].iloc[i-1]
+        # Buy: RSI < 35 and MACD crosses above signal
+        if rsi < 35 and macd > macd_signal and macd_prev <= macd_signal_prev:
+            signals[i] = 1
+        # Sell: RSI > 65 and MACD crosses below signal
+        elif rsi > 65 and macd < macd_signal and macd_prev >= macd_signal_prev:
+            signals[i] = -1
+    return signals
+
+def generate_volatility_breakout_signals(df):
+    signals = np.zeros(len(df))
+    for i in range(1, len(df)):
+        close = df['Close'].iloc[i]
+        upper = df['BB_High'].iloc[i]
+        lower = df['BB_Low'].iloc[i]
+        prev_close = df['Close'].iloc[i-1]
+        # Buy breakout
+        if prev_close <= upper and close > upper:
+            signals[i] = 1
+        # Sell breakdown
+        elif prev_close >= lower and close < lower:
+            signals[i] = -1
+    return signals
+
+def run_buy_and_hold(df, initial_capital=10000):
+    entry_price = df['Close'].iloc[0]
+    exit_price = df['Close'].iloc[-1]
+    total_return = (exit_price - entry_price) / entry_price * 100
+    result = ImprovedBacktestResult()
+    result.total_return = total_return
+    result.annualized_return = total_return  # Approximate for 1y
+    result.num_trades = 1
+    result.win_rate = 100 if total_return > 0 else 0
+    result.avg_win = total_return if total_return > 0 else 0
+    result.avg_loss = total_return if total_return < 0 else 0
+    result.max_drawdown = 0  # Not calculated
+    result.sharpe_ratio = 0  # Not calculated
+    result.trades = [{
+        'entry_date': df.index[0],
+        'exit_date': df.index[-1],
+        'entry_price': entry_price,
+        'exit_price': exit_price,
+        'profit_pct': total_return,
+        'exit_reason': 'hold'
+    }]
+    result.strategy_name = 'buy_and_hold'
+    return result
+
 def run_improved_backtest(df, strategy='combined', initial_capital=10000, transaction_cost=0.001):
     """
     Run improved backtest with multiple strategies
@@ -216,14 +286,28 @@ def run_improved_backtest(df, strategy='combined', initial_capital=10000, transa
         signals = generate_momentum_signals(df)
     elif strategy == 'mean_reversion':
         signals = generate_mean_reversion_signals(df)
+    elif strategy == 'sma_crossover':
+        signals = generate_sma_crossover_signals(df)
+    elif strategy == 'rsi_macd':
+        signals = generate_rsi_macd_signals(df)
+    elif strategy == 'volatility_breakout':
+        signals = generate_volatility_breakout_signals(df)
+    elif strategy == 'buy_and_hold':
+        return run_buy_and_hold(df, initial_capital)
     elif strategy == 'combined':
         # Combine all strategies
         ml_signals = generate_ml_signals(df)
         momentum_signals = generate_momentum_signals(df)
         mean_rev_signals = generate_mean_reversion_signals(df)
+        sma_crossover_signals = generate_sma_crossover_signals(df)
+        rsi_macd_signals = generate_rsi_macd_signals(df)
+        volatility_breakout_signals = generate_volatility_breakout_signals(df)
         
         # Weighted combination
-        signals = (ml_signals * 0.4 + momentum_signals * 0.4 + mean_rev_signals * 0.2)
+        signals = (ml_signals * 0.3 + momentum_signals * 0.3 + mean_rev_signals * 0.2)
+        signals += sma_crossover_signals * 0.1
+        signals += rsi_macd_signals * 0.05
+        signals += volatility_breakout_signals * 0.05
         # Convert to discrete signals
         signals = np.where(signals > 0.5, 1, np.where(signals < -0.5, -1, 0))
     
@@ -394,7 +478,7 @@ def print_improved_results(result):
 
 def run_strategy_comparison(df, initial_capital=10000):
     """Compare different strategies"""
-    strategies = ['ml', 'momentum', 'mean_reversion', 'combined']
+    strategies = ['buy_and_hold', 'ml', 'momentum', 'mean_reversion', 'sma_crossover', 'rsi_macd', 'volatility_breakout', 'combined']
     results = {}
     
     print("Running strategy comparison...")
